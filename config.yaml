@@ -1,0 +1,26 @@
+ollama:
+  base_url: "http://localhost:11434"   # 远程地址稍后填入，如 http://192.168.1.100:11434
+  model: "qwen3:8b"
+  temperature: 0.3
+  timeout: 120
+
+report:
+  disease: "流感"
+  region: "全国"
+  data_source: "流感病例监测数据、多源监测数据"
+  models: ["CNE", "TRCE", "Fusion"]
+
+data:
+  base_dir: "data"          # 相对脚本所在目录，跨机器可移植
+  main_data: "测试数据全国_填充.xlsx"
+  cne_alerts: "cne_alerts.csv"
+  trce_alerts: "trce_alerts.csv"
+  fusion_alerts: "critical_alerts.csv"
+
+output:
+  dir: "output"             # 相对脚本所在目录
+
+# 峰值识别参数（识别主要季节性流感高峰，过滤次级肩峰）
+peak_detection:
+  distance: 120     # 峰值最小间隔（天）
+  prominence: 100   # 峰值最小突出度

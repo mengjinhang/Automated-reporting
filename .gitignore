@@ -1,0 +1,12 @@
+output/
+__pycache__/
+*.pyc
+.DS_Store
+*.tar.gz
+*.zip
+
+# 根目录原始数据副本(已归入 data/)
+/cne_alerts.csv
+/critical_alerts.csv
+/trce_alerts.csv
+/测试数据全国_填充.xlsx
