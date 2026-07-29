@@ -6,7 +6,7 @@ echo   流感预警报告生成
 echo ============================================
 echo.
 echo [检查依赖]
-python -m pip install -q pandas openpyxl matplotlib numpy pyyaml requests
+python -m pip install -q pandas openpyxl matplotlib numpy pyyaml requests reportlab
 echo.
 echo [1] 先用占位文本验证数据与图表 (不调用大模型)
 python generate_report.py --dry-run

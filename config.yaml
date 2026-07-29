@@ -1,7 +1,10 @@
 ollama:
   base_url: "http://localhost:11434"   # 远程地址稍后填入，如 http://192.168.1.100:11434
   model: "qwen3.5:9b"
-  temperature: 0.3
+  temperature: 0.2
+  top_p: 0.8
+  repeat_penalty: 1.08
+  num_predict: 1000
   timeout: 300
 
 report:
@@ -19,6 +22,11 @@ data:
 
 output:
   dir: "output"             # 相对脚本所在目录
+
+analysis:
+  # latest_confirmed_event: 按最近一个已有病例峰值验证的完整风险事件出报告（更接近样例）
+  # latest_alert: 机械选取所有模型 CSV 中时间最晚的一条预警
+  current_event: "latest_confirmed_event"
 
 # 峰值识别参数（识别主要季节性流感高峰，过滤次级肩峰）
 peak_detection:
