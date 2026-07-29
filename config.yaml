@@ -1,8 +1,8 @@
 ollama:
   base_url: "http://localhost:11434"   # 远程地址稍后填入，如 http://192.168.1.100:11434
-  model: "qwen3:8b"
+  model: "qwen3.5:9b"
   temperature: 0.3
-  timeout: 120
+  timeout: 300
 
 report:
   disease: "流感"

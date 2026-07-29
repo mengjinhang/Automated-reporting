@@ -10,6 +10,7 @@
 """
 import argparse
 import os
+import re
 import sys
 from datetime import datetime
 
@@ -330,7 +331,9 @@ def call_ollama(prompt, cfg, dry_run=False):
             timeout=o.get("timeout", 120),
         )
         r.raise_for_status()
-        return r.json()["response"].strip()
+        text = r.json()["response"]
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        return text
     except Exception as e:
         return f"【LLM 调用失败：{e}】"
 
