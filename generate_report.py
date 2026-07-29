@@ -59,7 +59,7 @@ def find_peaks(x, distance=1, prominence=0):
 # 中文字体
 # ----------------------------------------------------------------------------
 def setup_font():
-    for name in ["Arial Unicode MS", "STHeiti", "Heiti TC", "Songti SC", "SimHei"]:
+    for name in ["SimHei", "Microsoft YaHei", "Arial Unicode MS", "STHeiti", "Heiti TC", "Songti SC"]:
         if any(f.name == name for f in font_manager.fontManager.ttflist):
             plt.rcParams["font.sans-serif"] = [name]
             break
@@ -141,7 +141,8 @@ RISK_BY_MODEL_COUNT = {3: "高可信预警", 2: "风险持续增强", 1: "弱信
 
 
 def _fmt_date(ts):
-    return pd.Timestamp(ts).strftime("%Y年%-m月%-d日")
+    d = pd.Timestamp(ts)
+    return f"{d.year}年{d.month}月{d.day}日"
 
 
 def analyze_flu_events(data, cfg):
@@ -228,7 +229,8 @@ def analyze_flu_events(data, cfg):
         "peak_desc": peak_desc,
     }
 
-    period = f"{df['date'].min().strftime('%Y年%-m月')}—{df['date'].max().strftime('%Y年%-m月')}"
+    dmin, dmax = df['date'].min(), df['date'].max()
+    period = f"{dmin.year}年{dmin.month}月—{dmax.year}年{dmax.month}月"
     return {"events": events, "latest": latest, "data_period": period,
             "peaks": [int(p) for p in peaks]}
 
