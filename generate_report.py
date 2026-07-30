@@ -402,7 +402,7 @@ def generate_charts(data, chart_dir):
 # ----------------------------------------------------------------------------
 # Ollama 调用
 # ----------------------------------------------------------------------------
-def call_ollama(prompt, cfg, dry_run=False):
+def call_ollama(prompt, cfg, dry_run=False, think=None):
     if dry_run:
         return "【占位文本 · dry-run 模式，未调用 LLM】"
     o = cfg["ollama"]
@@ -419,7 +419,9 @@ def call_ollama(prompt, cfg, dry_run=False):
             "stream": False,
             "options": options,
         }
-        if "think" in o:
+        if think is not None:
+            payload["think"] = think
+        elif "think" in o:
             payload["think"] = o.get("think", False)
         r = requests.post(
             f"{o['base_url']}/api/generate",
@@ -658,7 +660,7 @@ def _polish_section(section_name, facts, draft, limit, focus, cfg):
     raw = call_ollama(prompt, cfg)
     reason = _bad_llm_reason(raw)
     if reason:
-        retry = call_ollama(_simple_polish_prompt(section_name, facts, draft, limit), cfg)
+        retry = call_ollama(_simple_polish_prompt(section_name, facts, draft, limit), cfg, think=False)
         retry_reason = _bad_llm_reason(retry)
         if retry_reason:
             print(f"      - {section_name}：LLM 输出不可用，使用规则底稿（{retry_reason}）")
@@ -666,7 +668,7 @@ def _polish_section(section_name, facts, draft, limit, focus, cfg):
                 print(f"        首次响应预览：{_preview(raw)}")
                 print(f"        重试响应预览：{_preview(retry)}")
             return draft
-        print(f"      - {section_name}：已使用 LLM 润色（简化提示重试）")
+        print(f"      - {section_name}：已使用 LLM 润色（关闭 thinking 重试）")
         return _clean_llm_text(retry)
     print(f"      - {section_name}：已使用 LLM 润色")
     return _clean_llm_text(raw)
