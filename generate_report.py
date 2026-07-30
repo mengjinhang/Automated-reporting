@@ -413,10 +413,17 @@ def call_ollama(prompt, cfg, dry_run=False):
         "num_predict": o.get("num_predict", 1000),
     }
     try:
+        payload = {
+            "model": o["model"],
+            "prompt": prompt,
+            "stream": False,
+            "options": options,
+        }
+        if "think" in o:
+            payload["think"] = o.get("think", False)
         r = requests.post(
             f"{o['base_url']}/api/generate",
-            json={"model": o["model"], "prompt": prompt, "stream": False,
-                  "options": options},
+            json=payload,
             timeout=o.get("timeout", 120),
         )
         r.raise_for_status()

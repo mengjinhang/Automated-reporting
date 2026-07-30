@@ -4,7 +4,10 @@ ollama:
   temperature: 0.2
   top_p: 0.8
   repeat_penalty: 1.08
-  num_predict: 1000
+  # 思考模型会先消耗一部分 token 生成 thinking，再输出 response 正文；
+  # 报告脚本只读取 response，不会把 thinking 写入报告。
+  num_predict: 4096
+  think: true
   timeout: 300
   debug_response: false
 
