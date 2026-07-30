@@ -6,10 +6,10 @@ ollama:
   repeat_penalty: 1.08
   # 思考模型会先消耗一部分 token 生成 thinking，再输出 response 正文；
   # 报告脚本只读取 response，不会把 thinking 写入报告。
-  num_predict: 4096
+  num_predict: -1
   think: true
   timeout: 300
-  debug_response: false
+  debug_response: true
 
 report:
   disease: "流感"

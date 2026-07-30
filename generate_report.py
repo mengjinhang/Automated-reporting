@@ -12,6 +12,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from datetime import datetime
 
 import numpy as np
@@ -402,7 +403,11 @@ def generate_charts(data, chart_dir):
 # ----------------------------------------------------------------------------
 # Ollama 调用
 # ----------------------------------------------------------------------------
+OLLAMA_LAST_META = {}
+
+
 def call_ollama(prompt, cfg, dry_run=False, think=None):
+    global OLLAMA_LAST_META
     if dry_run:
         return "【占位文本 · dry-run 模式，未调用 LLM】"
     o = cfg["ollama"]
@@ -423,18 +428,32 @@ def call_ollama(prompt, cfg, dry_run=False, think=None):
             payload["think"] = think
         elif "think" in o:
             payload["think"] = o.get("think", False)
+        started = time.monotonic()
         r = requests.post(
             f"{o['base_url']}/api/generate",
             json=payload,
             timeout=o.get("timeout", 120),
         )
+        elapsed = time.monotonic() - started
         r.raise_for_status()
-        payload = r.json()
-        text = payload.get("response", "")
-        if not text and payload.get("thinking"):
+        result = r.json()
+        text = result.get("response", "")
+        thinking = result.get("thinking", "")
+        OLLAMA_LAST_META = {
+            "elapsed": elapsed,
+            "think": payload.get("think"),
+            "response_len": len(text),
+            "thinking_len": len(thinking),
+            "response_preview": _clean_llm_text(text)[:120],
+            "thinking_preview": thinking.replace("\n", " ")[:120],
+            "total_duration": result.get("total_duration"),
+            "eval_count": result.get("eval_count"),
+        }
+        if not text and thinking:
             return "【LLM 响应正文为空，仅返回 thinking 字段】"
         return text
     except Exception as e:
+        OLLAMA_LAST_META = {"error": str(e)}
         return f"【LLM 调用失败：{e}】"
 
 
@@ -655,22 +674,52 @@ def _preview(text, limit=90):
     return text[:limit] + ("..." if len(text) > limit else "")
 
 
+def _meta_text(meta):
+    if not meta:
+        return ""
+    if meta.get("error"):
+        return f"错误={meta['error']}"
+    parts = [
+        f"{meta.get('elapsed', 0):.1f}s",
+        f"think={meta.get('think')}",
+        f"response={meta.get('response_len', 0)}字",
+        f"thinking={meta.get('thinking_len', 0)}字",
+    ]
+    if meta.get("eval_count"):
+        parts.append(f"tokens={meta['eval_count']}")
+    return "，".join(parts)
+
+
+def _debug_meta(meta, label, cfg):
+    if not cfg.get("ollama", {}).get("debug_response", False):
+        return
+    print(f"        {label}详情：{_meta_text(meta)}")
+    if meta.get("response_preview"):
+        print(f"        {label}正文预览：{meta['response_preview']}")
+    if meta.get("thinking_preview"):
+        print(f"        {label}thinking预览：{meta['thinking_preview']}")
+
+
 def _polish_section(section_name, facts, draft, limit, focus, cfg):
     prompt = _polish_prompt(section_name, facts, draft, limit, focus)
     raw = call_ollama(prompt, cfg)
+    first_meta = dict(OLLAMA_LAST_META)
     reason = _bad_llm_reason(raw)
     if reason:
         retry = call_ollama(_simple_polish_prompt(section_name, facts, draft, limit), cfg, think=False)
+        retry_meta = dict(OLLAMA_LAST_META)
         retry_reason = _bad_llm_reason(retry)
         if retry_reason:
-            print(f"      - {section_name}：LLM 输出不可用，使用规则底稿（{retry_reason}）")
-            if cfg.get("ollama", {}).get("debug_response", False):
-                print(f"        首次响应预览：{_preview(raw)}")
-                print(f"        重试响应预览：{_preview(retry)}")
+            print(f"      - {section_name}：LLM 输出不可用，使用规则底稿（{retry_reason}；{_meta_text(retry_meta)}）")
+            _debug_meta(first_meta, "首次", cfg)
+            _debug_meta(retry_meta, "重试", cfg)
             return draft
-        print(f"      - {section_name}：已使用 LLM 润色（关闭 thinking 重试）")
+        print(f"      - {section_name}：已使用 LLM 润色（关闭 thinking 重试；{_meta_text(retry_meta)}）")
+        _debug_meta(first_meta, "首次", cfg)
+        _debug_meta(retry_meta, "重试", cfg)
         return _clean_llm_text(retry)
-    print(f"      - {section_name}：已使用 LLM 润色")
+    print(f"      - {section_name}：已使用 LLM 润色（{_meta_text(first_meta)}）")
+    _debug_meta(first_meta, "首次", cfg)
     return _clean_llm_text(raw)
 
 
