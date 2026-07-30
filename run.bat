@@ -7,14 +7,21 @@ echo ============================================
 echo.
 echo [检查依赖]
 python -m pip install -q pandas openpyxl matplotlib numpy pyyaml requests reportlab
+if errorlevel 1 goto error
 echo.
-echo [1] 先用占位文本验证数据与图表 (不调用大模型)
+echo [1] 先用规则底稿验证数据与图表 (不调用大模型)
 python generate_report.py --dry-run
+if errorlevel 1 goto error
 echo.
-echo 如上一步正常, 请确认 config.yaml 中的 model 名与 ollama list 一致,
-echo 然后按任意键运行完整流程 (调用本地 Ollama)...
-pause >nul
+echo [2] 运行完整流程 (调用 config.yaml 中配置的 Ollama；失败会自动使用规则底稿)
 python generate_report.py
+if errorlevel 1 goto error
 echo.
 echo 完成. 报告在 output 目录下.
+exit /b 0
+
+:error
+echo.
+echo 运行失败，请查看上方错误信息。
 pause
+exit /b 1

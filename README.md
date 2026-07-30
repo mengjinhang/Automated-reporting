@@ -39,7 +39,7 @@ python3 generate_report.py
 ```yaml
 ollama:
   base_url: "http://<远程IP>:11434"   # 远程服务器地址
-  model: "qwen3:8b"                    # 改成实际的模型名（ollama list 查看）
+  model: "qwen3.5:9b"     
 ```
 
 > 远程 Ollama 需以 `OLLAMA_HOST=0.0.0.0 ollama serve` 启动才能被外部访问，

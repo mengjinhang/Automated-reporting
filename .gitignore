@@ -10,3 +10,4 @@ __pycache__/
 /critical_alerts.csv
 /trce_alerts.csv
 /测试数据全国_填充.xlsx
+.venv/
