@@ -420,7 +420,11 @@ def call_ollama(prompt, cfg, dry_run=False):
             timeout=o.get("timeout", 120),
         )
         r.raise_for_status()
-        return _clean_llm_text(r.json()["response"])
+        payload = r.json()
+        text = payload.get("response", "")
+        if not text and payload.get("thinking"):
+            return "【LLM 响应正文为空，仅返回 thinking 字段】"
+        return text
     except Exception as e:
         return f"【LLM 调用失败：{e}】"
 
@@ -463,15 +467,24 @@ def _clean_llm_text(text):
 
 
 def _is_bad_llm_text(text):
+    return _bad_llm_reason(text) is not None
+
+
+def _bad_llm_reason(text):
     text = _clean_llm_text(text)
     if not text:
-        return True
+        return "清洗后为空"
     if text.startswith("【LLM 调用失败"):
-        return True
+        return text
+    if text.startswith("【LLM 响应正文为空"):
+        return text
     if len(text) < 35:
-        return True
+        return f"有效正文过短（{len(text)}字）"
     bad_patterns = ["我无法", "不能确定", "作为AI", "作为人工智能", "以下是", "标题："]
-    return any(p in text for p in bad_patterns)
+    for pattern in bad_patterns:
+        if pattern in text:
+            return f"包含异常模板语：{pattern}"
+    return None
 
 
 def _model_first_sentence(model, t, analysis):
@@ -617,15 +630,39 @@ def _polish_prompt(section_name, facts, draft, limit, focus):
 请在 {limit} 字以内输出最终段落。只输出正文，不要解释。"""
 
 
+def _simple_polish_prompt(section_name, facts, draft, limit):
+    return f"""请润色下面这段《传染病智能预警综合分析报告》的“{section_name}”正文。
+要求：只输出一个连续中文段落；不要标题、列表、表格；不要新增底稿和事实以外的数字、日期、地点、模型结论；控制在 {limit} 字以内。
+
+【事实】
+{facts}
+
+【底稿】
+{draft}"""
+
+
+def _preview(text, limit=90):
+    text = _clean_llm_text(text).replace("\n", " ")
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
 def _polish_section(section_name, facts, draft, limit, focus, cfg):
     prompt = _polish_prompt(section_name, facts, draft, limit, focus)
     raw = call_ollama(prompt, cfg)
-    polished = _with_fallback(raw, draft)
-    if polished == draft and _is_bad_llm_text(raw):
-        print(f"      - {section_name}：LLM 输出不可用，使用规则底稿")
-    else:
-        print(f"      - {section_name}：已使用 LLM 润色")
-    return polished
+    reason = _bad_llm_reason(raw)
+    if reason:
+        retry = call_ollama(_simple_polish_prompt(section_name, facts, draft, limit), cfg)
+        retry_reason = _bad_llm_reason(retry)
+        if retry_reason:
+            print(f"      - {section_name}：LLM 输出不可用，使用规则底稿（{retry_reason}）")
+            if cfg.get("ollama", {}).get("debug_response", False):
+                print(f"        首次响应预览：{_preview(raw)}")
+                print(f"        重试响应预览：{_preview(retry)}")
+            return draft
+        print(f"      - {section_name}：已使用 LLM 润色（简化提示重试）")
+        return _clean_llm_text(retry)
+    print(f"      - {section_name}：已使用 LLM 润色")
+    return _clean_llm_text(raw)
 
 
 def gen_narratives(analysis, cfg, dry_run=False):
