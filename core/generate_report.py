@@ -516,6 +516,8 @@ def _bad_llm_reason(text, facts=None):
         return text
     if len(text) < 35:
         return f"有效正文过短（{len(text)}字）"
+    if not re.search(r"[。！？.!?）】”]$", text):
+        return "正文疑似截断（未以完整句末标点结束）"
     bad_patterns = ["我无法", "不能确定", "作为AI", "作为人工智能", "以下是", "标题："]
     for pattern in bad_patterns:
         if pattern in text:
@@ -523,10 +525,14 @@ def _bad_llm_reason(text, facts=None):
     if facts and "不要写成预测峰值或预计峰值" in facts:
         peak_forecast = (
             r"(预计|预测|将于|将在).{0,12}(达到|出现|到来|形成).{0,8}(峰值|高峰)|"
-            r"(峰值|高峰).{0,12}(预计|预测).{0,12}(达到|出现|到来|形成)"
+            r"(峰值|高峰).{0,12}(预计|预测|将于|将在).{0,12}(达到|出现|到来|形成|显现)|"
+            r"(即将|来临前|到来前).{0,12}(峰值|高峰)|(峰值|高峰).{0,12}(即将|来临|到来)"
         )
         if re.search(peak_forecast, text):
             return "将已识别峰值误写为预测峰值"
+        response_window = r"(立即启动|仍有.{0,8}窗口|利用.{0,8}提前量窗口|峰值前.{0,12}(准备|处置|响应|降低传播))"
+        if re.search(response_window, text):
+            return "将事件提前量误写为当前可处置窗口"
     return None
 
 
@@ -552,11 +558,11 @@ def _fallback_risk(analysis):
         return (
             f"根据平台最新分析结果，{alert_text}检测到系统异常变化。本次预警对应"
             f"{_event_name(event['event_id'])}风险事件，该事件病例峰值出现在 t={event['peak_t']}，"
-            f"模型提前{lead_text.replace('约', '约')}识别风险变化。综合判断，当前流感传播系统已出现"
-            f"{latest['risk_status']}信号，系统由相对稳定状态向高风险状态转变，未来一段时间内病例规模"
-            f"可能进一步增加。由于本轮预警主要由传播动力学模型与多源融合模型共同支持，说明异常并非单一"
-            f"监测点波动，而是病例演化过程和融合风险信号在相近时间窗口内形成一致指向。当前阶段应将其视为"
-            f"峰值前的风险累积期，持续关注疫情演化过程和后续新增预警点变化。"
+            f"模型提前{lead_text.replace('约', '约')}识别风险变化。综合判断，本轮流感传播系统已出现"
+            f"{latest['risk_status']}信号，系统由相对稳定状态向高风险状态转变。由于本轮预警主要由"
+            f"传播动力学模型与多源融合模型共同支持，说明异常并非单一监测点波动，而是病例演化过程和融合"
+            f"风险信号在相近时间窗口内形成一致指向。从事件过程看，该预警位于对应峰值前的风险累积阶段，"
+            f"可为同类场景下的早期识别和响应准备提供参考。"
         )
 
     return (
@@ -613,12 +619,12 @@ def _fallback_confidence(analysis):
 def _fallback_advice(analysis):
     latest = analysis["latest"]
     return (
-        f"根据当前智能预警分析结果，当前流感传播系统已出现{latest['risk_status']}信号，"
-        f"风险等级为{latest['risk_color']}，且距离病例峰值仍存在{latest['peak_desc']}提前响应时间。"
-        f"建议加强疫情动态监测，提高流感监测频率，持续跟踪病例变化趋势及风险指标变化；"
-        f"同步做好重点场所健康提示、医疗资源储备和分级诊疗准备，必要时及时启动针对性干预措施。"
-        f"在监测层面，应重点关注后续 ILI 曲线是否持续上行、TRCE 指标是否继续偏移以及 Fusion 预警点是否连续出现；"
-        f"在处置层面，可提前完善门急诊接诊、重点人群健康提示和异常聚集信息核查，确保在病例峰值到来前形成较充分的响应准备。"
+        f"根据本轮智能预警分析结果，流感传播系统已出现{latest['risk_status']}信号，"
+        f"预警等级为{latest['risk_color']}，预警相对对应峰值提前{latest['peak_desc']}。"
+        f"建议在同类预警场景中加强疫情动态监测，持续跟踪病例变化趋势及风险指标变化；"
+        f"同步完善医疗资源储备、健康提示和分级诊疗准备，并结合新增数据开展滚动复核。"
+        f"在监测层面，应重点关注 ILI 曲线变化、TRCE 指标偏移以及 Fusion 预警点连续性；"
+        f"在处置层面，应将多模型证据作为调整响应强度的重要参考，避免过度依赖单一模型信号。"
     )
 
 
@@ -632,9 +638,10 @@ def _fact_block(analysis):
         f"最近一次预警时间：{latest['date']}，t={latest['t']}",
         f"触发模型：{'、'.join(latest['triggered']) or '无'}",
         f"未触发模型：{'、'.join(latest['untriggered']) or '无'}",
-        f"当前风险等级：{latest['risk_color']}",
+        f"预警风险等级：{latest['risk_color']}",
         f"风险状态：{latest['risk_status']}",
-        f"距病例峰值：{latest['peak_desc']}",
+        f"相对对应峰值提前量：{latest['peak_desc']}",
+        "时间语义：本报告按监测区间内最近一个已确认预警事件出报告，提前量表示预警相对对应峰值的提前识别时间，不代表报告生成日仍处于峰值前或仍有可利用响应窗口",
     ]
     if event:
         items.extend([
@@ -664,7 +671,8 @@ def _conversation_system_prompt(facts):
 2. 后续每轮只输出指定章节正文，不要输出标题、编号、表格或解释过程。
 3. 可以承接前文已经生成的判断，但不要机械重复上一轮内容。
 4. 表格中的“距病例峰值/提前量”表示预警相对对应峰值的提前识别时间，不表示报告生成日距离峰值的时间。
-5. 如果事实材料显示峰值已识别，只能写“峰值出现在/对应峰值为”，不要写“预计峰值、即将到来、峰值来临前”。"""
+5. 如果事实材料显示峰值已识别，只能写“峰值出现在/对应峰值为”，不要写“预计峰值、即将到来、峰值来临前”。
+6. 防控建议应基于本轮预警经验提出监测和处置要点，不要写成报告生成日需要立即启动的实时响应命令。"""
 
 
 def _section_task_prompt(section_name, guidance, limit):
@@ -679,7 +687,8 @@ def _section_task_prompt(section_name, guidance, limit):
 2. 可参考前文已经形成的表述保持报告一致性，但应补充本章节独有分析，不要大段复述前文。
 3. 不要新增事实材料以外的日期、t值、病例数、百分比、地区、政策名称或模型触发结论。
 4. 不要把 CNE 未触发写成已触发；不要把已识别峰值写成预测或未来事件。
-5. 控制在 {limit} 字以内。"""
+5. 不要为满足字数限制截断句子，宁可少写，也必须以完整句子结束。
+6. 控制在 {limit} 字以内。"""
 
 
 def _simple_analysis_prompt(section_name, facts, guidance, limit):
@@ -801,8 +810,8 @@ def gen_narratives(analysis, cfg, dry_run=False):
         (
             "advice",
             "防控建议", facts,
-            "基于当前风险等级、触发模型和提前响应窗口提出防控建议。建议应覆盖动态监测、重点场所、医疗资源准备、风险沟通、滚动评估等方向；不得新增具体政策名称、地区或事实材料中没有的数据。",
-            drafts["advice"], 460,
+            "基于本轮橙色预警、触发模型和预警提前量提出监测处置建议。建议应表述为对同类预警场景和后续滚动监测的处置要点，覆盖动态监测、医疗资源准备、风险沟通、模型复核等方向；不得写成报告生成日仍有47～48天窗口或需要立即启动的实时命令；不得新增具体政策名称、地区或事实材料中没有的数据。",
+            drafts["advice"], 520,
         ),
     ]
     for key, section_name, section_facts, guidance, fallback, limit in sections:
@@ -846,8 +855,8 @@ def build_report(analysis, narr, chart_paths, cfg, out_dir):
     L.append(f"| 对应时间节点 | t={latest['t']} |")
     L.append(f"| 触发模型 | {trig} |")
     L.append(f"| 未触发模型 | {untrig} |")
-    L.append(f"| 当前风险等级 | {latest['risk_color']} |")
-    L.append(f"| 距病例峰值 | {latest['peak_desc']} |")
+    L.append(f"| 预警风险等级 | {latest['risk_color']} |")
+    L.append(f"| 相对峰值提前量 | {latest['peak_desc']} |")
     L.append(f"| 风险状态 | {latest['risk_status']} |\n")
 
     L.append("### 2. 当前风险判断\n")
