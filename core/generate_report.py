@@ -466,20 +466,21 @@ def call_ollama(prompt, cfg, dry_run=False, think=None):
         return f"【LLM 调用失败：{e}】"
 
 
-SYS = """你是一名资深流行病学监测分析专家，正在润色传染病智能预警综合分析报告。
-你的任务不是自由创作，而是基于“事实”和“底稿”做专业化、书面化改写。
+SYS = """你是一名 CDC 流感/传染病监测分析专家，正在撰写传染病智能预警综合分析报告。
+你的任务是基于结构化事实和模型信号进行专业分析，不是改写固定底稿。
 硬性要求：
-1. 只能使用事实和底稿中出现的日期、t值、模型触发状态、预警等级、提前天数。
+1. 日期、t值、模型触发状态、预警等级、提前天数等事实类内容，只能使用事实材料中已经出现的信息。
 2. 不得新增病例数、概率、百分比、地区、政策名称或事实中没有的判断。
 3. 不要输出 Markdown 标题、列表、表格、项目符号、解释过程或思考过程。
 4. 输出连续中文段落，语气接近正式监测分析报告，克制、具体、可落地。
-5. 在不新增事实的前提下适当展开分析链条，不要写成过短结论句。
-6. 如果底稿已经合适，只做轻微润色，不改变原意。"""
+5. 可以依据 CNE、TRCE、Fusion 的模型含义解释风险来源、模型一致性、信号分歧和处置重点。
+6. 必须区分“已观测/已识别事实”和“研判建议”，不要把已识别峰值写成预测峰值。"""
 
 
-REFERENCE_STYLE = """参考文风：
-根据平台最新分析结果，TRCE模型于 t=1034（2025年10月31日）首次检测到系统异常变化，随后 Fusion 模型于 t=1035（2025年11月1日）输出橙色风险预警。本次预警对应第四次流感风险事件，该事件病例峰值出现在 t=1084，模型提前约49～50天识别风险变化。
-虽然CNE模型未产生对应预警，但TRCE和Fusion模型在相近时间窗口内同时识别到风险变化，说明当前异常主要表现为传播系统动力学变化和多源融合风险增强。"""
+MODEL_MEANING = """模型含义：
+CNE：侧重识别搜索行为和多源信息之间的因果网络结构变化，适合作为外部关注度和网络复杂性异常的辅助证据。
+TRCE：侧重识别病例时间序列传播动力学的非平稳变化，适合捕捉病例演化方向和增长过程异常。
+Fusion：整合多模型/多源信号并输出分级预警，适合判断多源证据是否形成一致风险指向。"""
 
 
 def _clean_llm_text(text):
@@ -507,7 +508,7 @@ def _is_bad_llm_text(text):
     return _bad_llm_reason(text) is not None
 
 
-def _bad_llm_reason(text):
+def _bad_llm_reason(text, facts=None):
     text = _clean_llm_text(text)
     if not text:
         return "清洗后为空"
@@ -521,6 +522,13 @@ def _bad_llm_reason(text):
     for pattern in bad_patterns:
         if pattern in text:
             return f"包含异常模板语：{pattern}"
+    if facts and "不要写成预测峰值或预计峰值" in facts:
+        peak_forecast = (
+            r"(预计|预测|将于|将在).{0,12}(达到|出现|到来|形成).{0,8}(峰值|高峰)|"
+            r"(峰值|高峰).{0,12}(预计|预测).{0,12}(达到|出现|到来|形成)"
+        )
+        if re.search(peak_forecast, text):
+            return "将已识别峰值误写为预测峰值"
     return None
 
 
@@ -639,6 +647,7 @@ def _fact_block(analysis):
         items.extend([
             f"对应事件：{_event_name(event['event_id'])}",
             f"峰值时间节点：t={event['peak_t']}，{event['peak_date']}",
+            "峰值性质：该峰值为监测区间内已识别峰值，不要写成预测峰值或预计峰值",
         ])
         for model in MODEL_ORDER:
             t = model_alerts.get(model)
@@ -649,33 +658,31 @@ def _fact_block(analysis):
     return "\n".join(items)
 
 
-def _polish_prompt(section_name, facts, draft, limit, focus):
+def _analysis_prompt(section_name, facts, guidance, limit):
     return f"""/no_think
 {SYS}
 
-{REFERENCE_STYLE}
+{MODEL_MEANING}
 
 【段落名称】{section_name}
-【事实】
+【事实材料】
 {facts}
 
-【底稿】
-{draft}
+【分析任务】
+{guidance}
 
-【润色要求】
-{focus}
-请在 {limit} 字以内输出最终段落。只输出正文，不要解释。"""
+请以传染病监测专家身份独立完成本段分析，在 {limit} 字以内输出最终段落。只输出正文，不要解释。"""
 
 
-def _simple_polish_prompt(section_name, facts, draft, limit):
-    return f"""请润色下面这段《传染病智能预警综合分析报告》的“{section_name}”正文。
-要求：只输出一个连续中文段落；不要标题、列表、表格；不要新增底稿和事实以外的数字、日期、地点、模型结论；控制在 {limit} 字以内。
+def _simple_analysis_prompt(section_name, facts, guidance, limit):
+    return f"""请作为 CDC 流感/传染病监测分析专家，基于事实材料撰写《传染病智能预警综合分析报告》的“{section_name}”正文。
+要求：只输出一个连续中文段落；不要标题、列表、表格；不要新增事实材料以外的数字、日期、地点、模型触发结论；可以基于模型含义作专业解释；控制在 {limit} 字以内。
 
-【事实】
+【事实材料】
 {facts}
 
-【底稿】
-{draft}"""
+【分析任务】
+{guidance}"""
 
 
 def _preview(text, limit=90):
@@ -709,25 +716,35 @@ def _debug_meta(meta, label, cfg):
         print(f"        {label}thinking预览：{meta['thinking_preview']}")
 
 
-def _polish_section(section_name, facts, draft, limit, focus, cfg):
-    prompt = _polish_prompt(section_name, facts, draft, limit, focus)
+def _generate_section(section_name, facts, guidance, fallback, limit, cfg):
+    prompt = _analysis_prompt(section_name, facts, guidance, limit)
     raw = call_ollama(prompt, cfg)
     first_meta = dict(OLLAMA_LAST_META)
-    reason = _bad_llm_reason(raw)
+    reason = _bad_llm_reason(raw, facts)
     if reason:
-        retry = call_ollama(_simple_polish_prompt(section_name, facts, draft, limit), cfg, think=False)
+        retry = call_ollama(prompt, cfg, think=False)
         retry_meta = dict(OLLAMA_LAST_META)
-        retry_reason = _bad_llm_reason(retry)
+        retry_reason = _bad_llm_reason(retry, facts)
         if retry_reason:
-            print(f"      - {section_name}：LLM 输出不可用，使用规则底稿（{retry_reason}；{_meta_text(retry_meta)}）")
+            simple_retry = call_ollama(_simple_analysis_prompt(section_name, facts, guidance, limit), cfg, think=False)
+            simple_meta = dict(OLLAMA_LAST_META)
+            simple_reason = _bad_llm_reason(simple_retry, facts)
+            if simple_reason:
+                print(f"      - {section_name}：LLM 输出不可用，使用规则兜底（{simple_reason}；{_meta_text(simple_meta)}）")
+                _debug_meta(first_meta, "首次", cfg)
+                _debug_meta(retry_meta, "完整重试", cfg)
+                _debug_meta(simple_meta, "简化重试", cfg)
+                return fallback
+            print(f"      - {section_name}：已使用 LLM 分析（简化重试；{_meta_text(simple_meta)}）")
             _debug_meta(first_meta, "首次", cfg)
-            _debug_meta(retry_meta, "重试", cfg)
-            return draft
-        print(f"      - {section_name}：已使用 LLM 润色（关闭 thinking 重试；{_meta_text(retry_meta)}）")
+            _debug_meta(retry_meta, "完整重试", cfg)
+            _debug_meta(simple_meta, "简化重试", cfg)
+            return _clean_llm_text(simple_retry)
+        print(f"      - {section_name}：已使用 LLM 分析（关闭 thinking 完整重试；{_meta_text(retry_meta)}）")
         _debug_meta(first_meta, "首次", cfg)
-        _debug_meta(retry_meta, "重试", cfg)
+        _debug_meta(retry_meta, "完整重试", cfg)
         return _clean_llm_text(retry)
-    print(f"      - {section_name}：已使用 LLM 润色（{_meta_text(first_meta)}）")
+    print(f"      - {section_name}：已使用 LLM 分析（{_meta_text(first_meta)}）")
     _debug_meta(first_meta, "首次", cfg)
     return _clean_llm_text(raw)
 
@@ -745,24 +762,28 @@ def gen_narratives(analysis, cfg, dry_run=False):
         return drafts
 
     return {
-        "risk": _polish_section(
-            "当前风险判断", facts, drafts["risk"], 280,
-            "保留预警时间、触发模型、对应事件、峰值节点和提前天数；突出风险由稳定转向增强，并适当说明为什么当前阶段属于峰值前风险累积期。",
+        "risk": _generate_section(
+            "当前风险判断", facts,
+            "围绕最近一次预警、触发模型、风险等级、对应事件、峰值节点和提前天数作综合研判。需要说明当前风险是由哪些模型证据支撑、风险状态代表什么、为什么需要关注峰值前窗口。若事实显示峰值已识别，不要写成预计峰值。",
+            drafts["risk"], 420,
             cfg,
         ),
-        "signal": _polish_section(
-            "结合监测图表的模型信号解读", facts, drafts["signal"], 520,
-            "分 CNE、TRCE、Fusion 依次解读；必须体现 CNE 未触发、TRCE 与 Fusion 触发，不要把未触发模型写成已触发；每个模型可写2到3句。",
+        "signal": _generate_section(
+            "结合监测图表的模型信号解读", facts,
+            "结合三张监测图表分别解释 CNE、TRCE、Fusion 的信号含义。必须尊重事实材料中的触发/未触发状态，不要把未触发模型写成已触发。需要说明各模型从信息网络、传播动力学、多源融合角度分别提供了什么证据，以及这些证据之间是否一致。",
+            drafts["signal"], 720,
             cfg,
         ),
-        "confidence": _polish_section(
-            "预警可信度分析", facts, drafts["confidence"], 240,
-            "解释多模型协同和分歧：TRCE/Fusion 同步增强，CNE 未触发代表因果网络变化不明显；适当说明本次预警可信但风险来源有侧重。",
+        "confidence": _generate_section(
+            "预警可信度分析", facts,
+            "从多模型一致性、模型分工、未触发模型的含义、历史事件提前量参考等角度判断本次预警可信度。既要指出支持证据，也要说明不确定性和需要继续复核的部分。",
+            drafts["confidence"], 360,
             cfg,
         ),
-        "advice": _polish_section(
-            "防控建议", facts, drafts["advice"], 300,
-            "建议要具体但不新增政策名，围绕动态监测、重点场所、医疗资源、滚动评估和峰值前准备展开。",
+        "advice": _generate_section(
+            "防控建议", facts,
+            "基于当前风险等级、触发模型和提前响应窗口提出防控建议。建议应覆盖动态监测、重点场所、医疗资源准备、风险沟通、滚动评估等方向；不得新增具体政策名称、地区或事实材料中没有的数据。",
+            drafts["advice"], 460,
             cfg,
         ),
     }
