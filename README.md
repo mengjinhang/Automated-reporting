@@ -15,8 +15,9 @@ Flu/
 │   ├── cne_alerts.csv / trce_alerts.csv / critical_alerts.csv
 ├── config.yaml              # 配置（Ollama 地址、疾病、区域、峰值参数）
 ├── generate_report.py       # 主脚本
+├── service.py               # 服务封装入口（供其他程序调用）
 └── output/
-    ├── report_YYYYMMDD_HHMM.md
+    ├── report_YYYYMMDD_HHMM.md / .pdf
     └── charts/{cne,trce,fusion}_chart.png
 ```
 
@@ -30,6 +31,23 @@ python3 generate_report.py --dry-run
 
 # 2. 在 config.yaml 中填入远程 Ollama 地址与模型名后，运行完整流程
 python3 generate_report.py
+```
+
+### 作为服务调用
+
+```python
+from service import generate_report
+
+result = generate_report(dry_run=False, make_pdf=True, verbose=True)
+print(result["markdown_path"])
+print(result["pdf_path"])
+```
+
+也可以用命令行获取 JSON 结果：
+
+```bash
+python3 service.py --dry-run --json
+python3 service.py --json
 ```
 
 ### 配置远程 Ollama
