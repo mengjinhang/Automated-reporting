@@ -58,7 +58,7 @@ print(result["pdf_path"])
 ```bash
 python3 service.py --dry-run --json --no-md2pdf
 python3 service.py --json --input-dir data --output-dir output --md2pdf
-python3 service.py --json --markdown-path output/report.md --pdf-path output/report.pdf
+python3 service.py --json --output-dir output --markdown-path report.md --pdf-path report.pdf
 ```
 
 ### 配置远程 Ollama
