@@ -506,6 +506,31 @@ SECTION_BADCASE_RULES = {
 }
 
 
+SECTION_BADCASE_PROMPTS = {
+    "risk": [
+        "不要写：当前仍处于峰值前窗口期。",
+        "不要写：尚有约47～48天响应窗口。",
+        "推荐写：本轮预警相对对应峰值提前约47～48天，体现模型对风险上升过程的提前识别。",
+    ],
+    "signal": [
+        "不要写：CNE 已触发或检测到显著异常变化。",
+        "不要写：外部关注度已经出现明确异常升高。",
+        "推荐写：CNE 未触发，说明搜索行为相关因果网络尚未形成与本轮事件一致的异常证据。",
+    ],
+    "confidence": [
+        "不要写：三模型同步触发、三模型完全一致或不存在分歧。",
+        "不要写：CNE、TRCE、Fusion 共同确认本轮风险。",
+        "推荐写：TRCE 与 Fusion 形成相互支持，CNE 未触发提示证据来源存在分歧。",
+    ],
+    "advice": [
+        "不要写：建议立即启动动态监测机制。",
+        "不要写：利用约47～48天提前量窗口开展峰值前处置。",
+        "不要写：即将到来的峰值、峰值来临前、峰值显现前。",
+        "推荐写：建议在同类橙色预警场景中，将 TRCE 与 Fusion 的连续信号作为加强监测、资源准备和滚动复核的重要依据。",
+    ],
+}
+
+
 def _clean_llm_text(text):
     text = text or ""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
@@ -701,31 +726,61 @@ def _conversation_system_prompt(facts):
 6. 防控建议应基于本轮预警经验提出监测和处置要点，不要写成报告生成日需要立即启动的实时响应命令。"""
 
 
-def _section_task_prompt(section_name, guidance, limit):
+def _section_badcase_prompt(section_key):
+    badcases = SECTION_BADCASE_PROMPTS.get(section_key, [])
+    if not badcases:
+        return ""
+    lines = ["【本轮 badcase 强约束】", "以下写法会被视为不合格，请主动避开；推荐表达只提供语义方向，不要求照抄。"]
+    lines.extend(f"{i}. {item}" for i, item in enumerate(badcases, 1))
+    return "\n".join(lines)
+
+
+def _retry_prompt(reason, limit):
+    if not reason:
+        return ""
+    return (
+        "【上次输出被拒原因】\n"
+        f"{reason}\n"
+        f"请基于同一事实材料完整重写，优先保证事实准确和句子完整；本轮上限已缩短为 {limit} 字，不必写满。\n"
+    )
+
+
+def _section_task_prompt(section_key, section_name, guidance, limit, retry_reason=None):
+    retry_block = _retry_prompt(retry_reason, limit)
+    badcase_block = _section_badcase_prompt(section_key)
     return f"""/no_think
 【本轮输出章节】{section_name}
 
+{retry_block}
 【本轮分析任务】
 {guidance}
+
+{badcase_block}
 
 【本轮注意事项】
 1. 只输出本章节正文，一个连续中文段落。
 2. 可参考前文已经形成的表述保持报告一致性，但应补充本章节独有分析，不要大段复述前文。
 3. 不要新增事实材料以外的日期、t值、病例数、百分比、地区、政策名称或模型触发结论。
 4. 不要把 CNE 未触发写成已触发；不要把已识别峰值写成预测或未来事件。
-5. 不要为满足字数限制截断句子，宁可少写，也必须以完整句子结束。
+5. 不必写满字数上限；宁可短一些，也必须自然收束并以完整句号、问号或感叹号结束。
 6. 控制在 {limit} 字以内。"""
 
 
-def _simple_analysis_prompt(section_name, facts, guidance, limit):
+def _simple_analysis_prompt(section_key, section_name, facts, guidance, limit, retry_reason=None):
+    retry_block = _retry_prompt(retry_reason, limit)
+    badcase_block = _section_badcase_prompt(section_key)
     return f"""请作为 CDC 流感/传染病监测分析专家，基于事实材料撰写《传染病智能预警综合分析报告》的“{section_name}”正文。
-要求：只输出一个连续中文段落；不要标题、列表、表格；不要新增事实材料以外的数字、日期、地点、模型触发结论；可以基于模型含义作专业解释；控制在 {limit} 字以内。
+要求：只输出一个连续中文段落；不要标题、列表、表格；不要新增事实材料以外的数字、日期、地点、模型触发结论；可以基于模型含义作专业解释；不必写满字数上限，必须以完整句末标点结束；控制在 {limit} 字以内。
+
+{retry_block}
 
 【事实材料】
 {facts}
 
 【分析任务】
-{guidance}"""
+{guidance}
+
+{badcase_block}"""
 
 
 def _preview(text, limit=90):
@@ -760,40 +815,50 @@ def _debug_meta(meta, label, cfg):
 
 
 def _generate_section_turn(messages, section_key, section_name, facts, guidance, fallback, limit, cfg):
-    user_message = {"role": "user", "content": _section_task_prompt(section_name, guidance, limit)}
+    user_message = {"role": "user", "content": _section_task_prompt(section_key, section_name, guidance, limit)}
     turn_messages = messages + [user_message]
     raw = call_ollama_chat(turn_messages, cfg)
     first_meta = dict(OLLAMA_LAST_META)
     reason = _bad_llm_reason(raw, facts, section_key)
     if reason:
-        retry = call_ollama_chat(turn_messages, cfg, think=False)
+        retry_limit = max(120, int(limit * 0.75))
+        retry_message = {
+            "role": "user",
+            "content": _section_task_prompt(section_key, section_name, guidance, retry_limit, reason),
+        }
+        retry_messages = messages + [retry_message]
+        retry = call_ollama_chat(retry_messages, cfg, think=False)
         retry_meta = dict(OLLAMA_LAST_META)
         retry_reason = _bad_llm_reason(retry, facts, section_key)
         if retry_reason:
-            simple_messages = messages + [{
+            simple_limit = max(100, int(limit * 0.6))
+            simple_message = {
                 "role": "user",
-                "content": _simple_analysis_prompt(section_name, facts, guidance, limit),
-            }]
+                "content": _simple_analysis_prompt(
+                    section_key, section_name, facts, guidance, simple_limit, retry_reason
+                ),
+            }
+            simple_messages = messages + [simple_message]
             simple_retry = call_ollama_chat(simple_messages, cfg, think=False)
             simple_meta = dict(OLLAMA_LAST_META)
             simple_reason = _bad_llm_reason(simple_retry, facts, section_key)
             if simple_reason:
                 print(f"      - {section_name}：LLM 输出不可用，使用规则兜底（{simple_reason}；{_meta_text(simple_meta)}）")
                 _debug_meta(first_meta, "首次", cfg)
-                _debug_meta(retry_meta, "完整重试", cfg)
+                _debug_meta(retry_meta, "缩短重试", cfg)
                 _debug_meta(simple_meta, "简化重试", cfg)
-                return fallback, messages + [user_message, {"role": "assistant", "content": fallback}]
+                return fallback, messages + [simple_message, {"role": "assistant", "content": fallback}]
             print(f"      - {section_name}：已使用 LLM 分析（简化重试；{_meta_text(simple_meta)}）")
             _debug_meta(first_meta, "首次", cfg)
-            _debug_meta(retry_meta, "完整重试", cfg)
+            _debug_meta(retry_meta, "缩短重试", cfg)
             _debug_meta(simple_meta, "简化重试", cfg)
             text = _clean_llm_text(simple_retry)
-            return text, messages + [user_message, {"role": "assistant", "content": text}]
-        print(f"      - {section_name}：已使用 LLM 分析（关闭 thinking 完整重试；{_meta_text(retry_meta)}）")
+            return text, messages + [simple_message, {"role": "assistant", "content": text}]
+        print(f"      - {section_name}：已使用 LLM 分析（关闭 thinking 缩短重试；{_meta_text(retry_meta)}）")
         _debug_meta(first_meta, "首次", cfg)
-        _debug_meta(retry_meta, "完整重试", cfg)
+        _debug_meta(retry_meta, "缩短重试", cfg)
         text = _clean_llm_text(retry)
-        return text, messages + [user_message, {"role": "assistant", "content": text}]
+        return text, messages + [retry_message, {"role": "assistant", "content": text}]
     print(f"      - {section_name}：已使用 LLM 分析（{_meta_text(first_meta)}）")
     _debug_meta(first_meta, "首次", cfg)
     text = _clean_llm_text(raw)
