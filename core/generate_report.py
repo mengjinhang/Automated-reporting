@@ -415,7 +415,7 @@ def generate_charts(data, chart_dir):
 OLLAMA_LAST_META = {}
 
 
-def call_ollama(prompt, cfg, dry_run=False, think=None):
+def call_ollama_chat(messages, cfg, dry_run=False, think=None):
     global OLLAMA_LAST_META
     if dry_run:
         return "【占位文本 · dry-run 模式，未调用 LLM】"
@@ -429,7 +429,7 @@ def call_ollama(prompt, cfg, dry_run=False, think=None):
     try:
         payload = {
             "model": o["model"],
-            "prompt": prompt,
+            "messages": messages,
             "stream": False,
             "options": options,
         }
@@ -439,16 +439,18 @@ def call_ollama(prompt, cfg, dry_run=False, think=None):
             payload["think"] = o.get("think", False)
         started = time.monotonic()
         r = requests.post(
-            f"{o['base_url']}/api/generate",
+            f"{o['base_url']}/api/chat",
             json=payload,
             timeout=o.get("timeout", 120),
         )
         elapsed = time.monotonic() - started
         r.raise_for_status()
         result = r.json()
-        text = result.get("response", "")
-        thinking = result.get("thinking", "")
+        message = result.get("message", {}) or {}
+        text = message.get("content", "") or result.get("response", "")
+        thinking = message.get("thinking", "") or result.get("thinking", "")
         OLLAMA_LAST_META = {
+            "endpoint": "chat",
             "elapsed": elapsed,
             "think": payload.get("think"),
             "response_len": len(text),
@@ -462,12 +464,12 @@ def call_ollama(prompt, cfg, dry_run=False, think=None):
             return "【LLM 响应正文为空，仅返回 thinking 字段】"
         return text
     except Exception as e:
-        OLLAMA_LAST_META = {"error": str(e)}
+        OLLAMA_LAST_META = {"endpoint": "chat", "error": str(e)}
         return f"【LLM 调用失败：{e}】"
 
 
 SYS = """你是一名 CDC 流感/传染病监测分析专家，正在撰写传染病智能预警综合分析报告。
-你的任务是基于结构化事实和模型信号进行专业分析，不是改写固定底稿。
+你的任务是基于结构化事实和模型信号进行专业分析。
 硬性要求：
 1. 日期、t值、模型触发状态、预警等级、提前天数等事实类内容，只能使用事实材料中已经出现的信息。
 2. 不得新增病例数、概率、百分比、地区、政策名称或事实中没有的判断。
@@ -502,10 +504,6 @@ def _clean_llm_text(text):
     text = "".join(lines)
     text = re.sub(r"\s+", " ", text).strip()
     return text.replace(" 。", "。").replace(" ，", "，")
-
-
-def _is_bad_llm_text(text):
-    return _bad_llm_reason(text) is not None
 
 
 def _bad_llm_reason(text, facts=None):
@@ -624,11 +622,6 @@ def _fallback_advice(analysis):
     )
 
 
-def _with_fallback(text, fallback):
-    text = _clean_llm_text(text)
-    return fallback if _is_bad_llm_text(text) else text
-
-
 def _fact_block(analysis):
     latest = analysis["latest"]
     event = latest.get("event") or {}
@@ -658,20 +651,35 @@ def _fact_block(analysis):
     return "\n".join(items)
 
 
-def _analysis_prompt(section_name, facts, guidance, limit):
-    return f"""/no_think
-{SYS}
+def _conversation_system_prompt(facts):
+    return f"""{SYS}
 
 {MODEL_MEANING}
 
-【段落名称】{section_name}
 【事实材料】
 {facts}
 
-【分析任务】
+【全局写作边界】
+1. 本报告会分多轮生成四个正文部分：当前风险判断、结合监测图表的模型信号解读、预警可信度分析、防控建议。
+2. 后续每轮只输出指定章节正文，不要输出标题、编号、表格或解释过程。
+3. 可以承接前文已经生成的判断，但不要机械重复上一轮内容。
+4. 表格中的“距病例峰值/提前量”表示预警相对对应峰值的提前识别时间，不表示报告生成日距离峰值的时间。
+5. 如果事实材料显示峰值已识别，只能写“峰值出现在/对应峰值为”，不要写“预计峰值、即将到来、峰值来临前”。"""
+
+
+def _section_task_prompt(section_name, guidance, limit):
+    return f"""/no_think
+【本轮输出章节】{section_name}
+
+【本轮分析任务】
 {guidance}
 
-请以传染病监测专家身份独立完成本段分析，在 {limit} 字以内输出最终段落。只输出正文，不要解释。"""
+【本轮注意事项】
+1. 只输出本章节正文，一个连续中文段落。
+2. 可参考前文已经形成的表述保持报告一致性，但应补充本章节独有分析，不要大段复述前文。
+3. 不要新增事实材料以外的日期、t值、病例数、百分比、地区、政策名称或模型触发结论。
+4. 不要把 CNE 未触发写成已触发；不要把已识别峰值写成预测或未来事件。
+5. 控制在 {limit} 字以内。"""
 
 
 def _simple_analysis_prompt(section_name, facts, guidance, limit):
@@ -716,17 +724,22 @@ def _debug_meta(meta, label, cfg):
         print(f"        {label}thinking预览：{meta['thinking_preview']}")
 
 
-def _generate_section(section_name, facts, guidance, fallback, limit, cfg):
-    prompt = _analysis_prompt(section_name, facts, guidance, limit)
-    raw = call_ollama(prompt, cfg)
+def _generate_section_turn(messages, section_name, facts, guidance, fallback, limit, cfg):
+    user_message = {"role": "user", "content": _section_task_prompt(section_name, guidance, limit)}
+    turn_messages = messages + [user_message]
+    raw = call_ollama_chat(turn_messages, cfg)
     first_meta = dict(OLLAMA_LAST_META)
     reason = _bad_llm_reason(raw, facts)
     if reason:
-        retry = call_ollama(prompt, cfg, think=False)
+        retry = call_ollama_chat(turn_messages, cfg, think=False)
         retry_meta = dict(OLLAMA_LAST_META)
         retry_reason = _bad_llm_reason(retry, facts)
         if retry_reason:
-            simple_retry = call_ollama(_simple_analysis_prompt(section_name, facts, guidance, limit), cfg, think=False)
+            simple_messages = messages + [{
+                "role": "user",
+                "content": _simple_analysis_prompt(section_name, facts, guidance, limit),
+            }]
+            simple_retry = call_ollama_chat(simple_messages, cfg, think=False)
             simple_meta = dict(OLLAMA_LAST_META)
             simple_reason = _bad_llm_reason(simple_retry, facts)
             if simple_reason:
@@ -734,19 +747,22 @@ def _generate_section(section_name, facts, guidance, fallback, limit, cfg):
                 _debug_meta(first_meta, "首次", cfg)
                 _debug_meta(retry_meta, "完整重试", cfg)
                 _debug_meta(simple_meta, "简化重试", cfg)
-                return fallback
+                return fallback, messages + [user_message, {"role": "assistant", "content": fallback}]
             print(f"      - {section_name}：已使用 LLM 分析（简化重试；{_meta_text(simple_meta)}）")
             _debug_meta(first_meta, "首次", cfg)
             _debug_meta(retry_meta, "完整重试", cfg)
             _debug_meta(simple_meta, "简化重试", cfg)
-            return _clean_llm_text(simple_retry)
+            text = _clean_llm_text(simple_retry)
+            return text, messages + [user_message, {"role": "assistant", "content": text}]
         print(f"      - {section_name}：已使用 LLM 分析（关闭 thinking 完整重试；{_meta_text(retry_meta)}）")
         _debug_meta(first_meta, "首次", cfg)
         _debug_meta(retry_meta, "完整重试", cfg)
-        return _clean_llm_text(retry)
+        text = _clean_llm_text(retry)
+        return text, messages + [user_message, {"role": "assistant", "content": text}]
     print(f"      - {section_name}：已使用 LLM 分析（{_meta_text(first_meta)}）")
     _debug_meta(first_meta, "首次", cfg)
-    return _clean_llm_text(raw)
+    text = _clean_llm_text(raw)
+    return text, messages + [user_message, {"role": "assistant", "content": text}]
 
 
 def gen_narratives(analysis, cfg, dry_run=False):
@@ -761,32 +777,39 @@ def gen_narratives(analysis, cfg, dry_run=False):
     if dry_run:
         return drafts
 
-    return {
-        "risk": _generate_section(
+    messages = [{"role": "system", "content": _conversation_system_prompt(facts)}]
+    narratives = {}
+    sections = [
+        (
+            "risk",
             "当前风险判断", facts,
             "围绕最近一次预警、触发模型、风险等级、对应事件、峰值节点和提前天数作综合研判。需要说明当前风险是由哪些模型证据支撑、风险状态代表什么、为什么需要关注峰值前窗口。若事实显示峰值已识别，不要写成预计峰值。",
             drafts["risk"], 420,
-            cfg,
         ),
-        "signal": _generate_section(
+        (
+            "signal",
             "结合监测图表的模型信号解读", facts,
             "结合三张监测图表分别解释 CNE、TRCE、Fusion 的信号含义。必须尊重事实材料中的触发/未触发状态，不要把未触发模型写成已触发。需要说明各模型从信息网络、传播动力学、多源融合角度分别提供了什么证据，以及这些证据之间是否一致。",
             drafts["signal"], 720,
-            cfg,
         ),
-        "confidence": _generate_section(
+        (
+            "confidence",
             "预警可信度分析", facts,
             "从多模型一致性、模型分工、未触发模型的含义、历史事件提前量参考等角度判断本次预警可信度。既要指出支持证据，也要说明不确定性和需要继续复核的部分。",
             drafts["confidence"], 360,
-            cfg,
         ),
-        "advice": _generate_section(
+        (
+            "advice",
             "防控建议", facts,
             "基于当前风险等级、触发模型和提前响应窗口提出防控建议。建议应覆盖动态监测、重点场所、医疗资源准备、风险沟通、滚动评估等方向；不得新增具体政策名称、地区或事实材料中没有的数据。",
             drafts["advice"], 460,
-            cfg,
         ),
-    }
+    ]
+    for key, section_name, section_facts, guidance, fallback, limit in sections:
+        narratives[key], messages = _generate_section_turn(
+            messages, section_name, section_facts, guidance, fallback, limit, cfg
+        )
+    return narratives
 
 
 # ----------------------------------------------------------------------------
