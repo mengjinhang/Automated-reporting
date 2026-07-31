@@ -3,8 +3,8 @@
 """Markdown 报告 → PDF（基于 ReportLab，跨平台）。
 
 用法:
-    python md_to_pdf.py output/report_20260729_1641.md
-    python md_to_pdf.py output/report_20260729_1641.md -o output/my_report.pdf
+    python core/md_to_pdf.py output/report_20260729_1641.md
+    python core/md_to_pdf.py output/report_20260729_1641.md -o output/my_report.pdf
 """
 import argparse
 import os

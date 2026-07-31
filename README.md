@@ -14,8 +14,10 @@ Flu/
 │   ├── 测试数据全国_填充.xlsx
 │   ├── cne_alerts.csv / trce_alerts.csv / critical_alerts.csv
 ├── config.yaml              # 配置（Ollama 地址、疾病、区域、峰值参数）
-├── generate_report.py       # 主脚本
 ├── service.py               # 服务封装入口（供其他程序调用）
+├── core/
+│   ├── generate_report.py   # 报告生成核心逻辑
+│   └── md_to_pdf.py         # Markdown 转 PDF
 └── output/
     ├── report_YYYYMMDD_HHMM.md / .pdf
     └── charts/{cne,trce,fusion}_chart.png
@@ -26,11 +28,11 @@ Flu/
 ```bash
 cd /Users/mac/Desktop/Flu
 
-# 1. 先用占位文本验证数据分析与图表（不调用 LLM）
-python3 generate_report.py --dry-run
+# 1. 先用规则底稿验证数据分析与图表（不调用 LLM）
+python3 service.py --dry-run
 
 # 2. 在 config.yaml 中填入远程 Ollama 地址与模型名后，运行完整流程
-python3 generate_report.py
+python3 service.py
 ```
 
 ### 作为服务调用

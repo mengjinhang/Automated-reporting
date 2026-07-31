@@ -10,11 +10,11 @@ python -m pip install -q pandas openpyxl matplotlib numpy pyyaml requests report
 if errorlevel 1 goto error
 echo.
 echo [1] 先用规则底稿验证数据与图表 (不调用大模型)
-python generate_report.py --dry-run
+python service.py --dry-run
 if errorlevel 1 goto error
 echo.
 echo [2] 运行完整流程 (调用 config.yaml 中配置的 Ollama；失败会自动使用规则底稿)
-python generate_report.py
+python service.py
 if errorlevel 1 goto error
 echo.
 echo 完成. 报告在 output 目录下.

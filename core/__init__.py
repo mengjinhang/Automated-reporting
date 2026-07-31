@@ -1,0 +1,1 @@
+"""Core report generation package."""

@@ -3,7 +3,7 @@
 """Service wrapper for generating flu surveillance reports.
 
 This module keeps orchestration code in one reusable entry point so other
-programs can call the project without shelling out to generate_report.py.
+programs can call the project without shelling out to core/generate_report.py.
 """
 import argparse
 import contextlib
@@ -12,7 +12,7 @@ import json
 import os
 from datetime import datetime
 
-import generate_report as report_core
+from core import generate_report as report_core
 
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -104,7 +104,7 @@ def generate_report(config_path=None, dry_run=False, make_pdf=True, now=None, ve
         if verbose:
             print("[6/6] 生成 PDF ...")
         try:
-            from md_to_pdf import export_md_pdf
+            from core.md_to_pdf import export_md_pdf
 
             if verbose:
                 pdf_path = export_md_pdf(md_path)

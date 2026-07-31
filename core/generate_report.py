@@ -4,9 +4,9 @@
 流感预警综合分析报告自动生成
 - 数值与表格由代码精确计算，LLM 仅生成叙述性段落，避免数值幻觉。
 用法:
-    python3 generate_report.py                 # 完整流程（需 Ollama 可用）
-    python3 generate_report.py --dry-run       # 用占位文本，仅验证数据/图表
-    python3 generate_report.py --config x.yaml
+    python3 service.py                         # 推荐入口（需 Ollama 可用）
+    python3 service.py --dry-run               # 用规则底稿验证数据/图表
+    python3 core/generate_report.py --config x.yaml
 """
 import argparse
 import os
@@ -71,19 +71,25 @@ def setup_font():
 # ----------------------------------------------------------------------------
 # 配置与数据加载
 # ----------------------------------------------------------------------------
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CORE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.path.dirname(CORE_DIR)
+DEFAULT_CONFIG = os.path.join(PROJECT_DIR, "config.yaml")
+if PROJECT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_DIR)
 
 
-def _resolve(p):
-    """相对路径按脚本所在目录解析，保证跨机器/任意工作目录可运行。"""
-    return p if os.path.isabs(p) else os.path.join(SCRIPT_DIR, p)
+def _resolve(p, base_dir):
+    """相对路径按配置文件所在目录解析，保证跨机器/任意工作目录可运行。"""
+    return p if os.path.isabs(p) else os.path.join(base_dir, p)
 
 
 def load_config(path):
+    path = os.path.abspath(path)
     with open(path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    cfg["data"]["base_dir"] = _resolve(cfg["data"]["base_dir"])
-    cfg["output"]["dir"] = _resolve(cfg["output"]["dir"])
+    config_dir = os.path.dirname(path)
+    cfg["data"]["base_dir"] = _resolve(cfg["data"]["base_dir"], config_dir)
+    cfg["output"]["dir"] = _resolve(cfg["output"]["dir"], config_dir)
     return cfg
 
 
@@ -836,7 +842,7 @@ def build_report(analysis, narr, chart_paths, cfg, out_dir):
 # ----------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default=os.path.join(os.path.dirname(__file__), "config.yaml"))
+    ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--dry-run", action="store_true", help="不调用 LLM，用占位文本")
     args = ap.parse_args()
 
@@ -871,7 +877,7 @@ def main():
 
     print("[6/6] 生成 PDF ...")
     try:
-        from md_to_pdf import export_md_pdf
+        from core.md_to_pdf import export_md_pdf
         pdf_path = export_md_pdf(out_path)
         print(f"  PDF → {pdf_path}")
     except ImportError:
