@@ -9,6 +9,9 @@
     python3 core/generate_report.py --config x.yaml
 """
 import argparse
+import contextlib
+import io
+import json
 import os
 import re
 import sys
@@ -837,6 +840,208 @@ def build_report(analysis, narr, chart_paths, cfg, out_dir):
     return "\n".join(L)
 
 
+def _now_value(now=None):
+    if now is None:
+        return datetime.now()
+    if isinstance(now, datetime):
+        return now
+    if isinstance(now, str):
+        return datetime.fromisoformat(now)
+    raise TypeError("now must be None, datetime, or ISO datetime string")
+
+
+def _latest_summary(analysis):
+    latest = analysis["latest"]
+    return {
+        "date": latest["date"],
+        "t": latest["t"],
+        "triggered": latest["triggered"],
+        "untriggered": latest["untriggered"],
+        "risk_color": latest["risk_color"],
+        "risk_status": latest["risk_status"],
+        "peak_desc": latest["peak_desc"],
+        "near_peak_t": latest["near_peak_t"],
+        "near_peak_date": latest["near_peak_date"],
+    }
+
+
+def _call_narratives(analysis, cfg, dry_run, verbose):
+    if verbose:
+        return gen_narratives(analysis, cfg, dry_run=dry_run)
+    with contextlib.redirect_stdout(io.StringIO()):
+        return gen_narratives(analysis, cfg, dry_run=dry_run)
+
+
+def _abs_path(path, base_dir):
+    if path is None:
+        return None
+    return path if os.path.isabs(path) else os.path.abspath(os.path.join(base_dir, path))
+
+
+def _data_file_path(cfg, key):
+    base_dir = cfg["data"]["base_dir"]
+    fname = cfg["data"][key]
+    return fname if os.path.isabs(fname) else os.path.join(base_dir, fname)
+
+
+def _input_paths(cfg):
+    return {
+        "data_dir": cfg["data"]["base_dir"],
+        "main_data": _data_file_path(cfg, "main_data"),
+        "cne_alerts": _data_file_path(cfg, "cne_alerts"),
+        "trce_alerts": _data_file_path(cfg, "trce_alerts"),
+        "fusion_alerts": _data_file_path(cfg, "fusion_alerts"),
+    }
+
+
+def _apply_path_overrides(
+    cfg,
+    config_path,
+    data_dir=None,
+    main_data=None,
+    cne_alerts=None,
+    trce_alerts=None,
+    fusion_alerts=None,
+    output_dir=None,
+):
+    config_dir = os.path.dirname(os.path.abspath(config_path))
+    if data_dir is not None:
+        cfg["data"]["base_dir"] = _abs_path(data_dir, config_dir)
+    for key, value in {
+        "main_data": main_data,
+        "cne_alerts": cne_alerts,
+        "trce_alerts": trce_alerts,
+        "fusion_alerts": fusion_alerts,
+    }.items():
+        if value is not None:
+            cfg["data"][key] = value
+    if output_dir is not None:
+        cfg["output"]["dir"] = _abs_path(output_dir, config_dir)
+    return cfg
+
+
+def generate_report(
+    config_path=None,
+    dry_run=False,
+    md2pdf=True,
+    now=None,
+    verbose=False,
+    data_dir=None,
+    main_data=None,
+    cne_alerts=None,
+    trce_alerts=None,
+    fusion_alerts=None,
+    output_dir=None,
+    markdown_path=None,
+    pdf_path=None,
+    make_pdf=None,
+):
+    """Generate a report and return output paths plus summary metadata.
+
+    Args:
+        config_path: Path to config YAML.
+        dry_run: Use rule-based narratives without calling Ollama.
+        md2pdf: Whether to convert the Markdown report to PDF.
+        now: Optional datetime or ISO datetime string used in timestamps.
+        verbose: Print progress and LLM diagnostics while running.
+        data_dir: Override data.base_dir from config.
+        main_data: Override main Excel input filename/path.
+        cne_alerts: Override CNE alert CSV filename/path.
+        trce_alerts: Override TRCE alert CSV filename/path.
+        fusion_alerts: Override Fusion alert CSV filename/path.
+        output_dir: Override output directory.
+        markdown_path: Override generated Markdown path.
+        pdf_path: Override generated PDF path.
+        make_pdf: Backward-compatible alias for md2pdf.
+    """
+    config_path = config_path or DEFAULT_CONFIG
+    if make_pdf is not None:
+        md2pdf = make_pdf
+    setup_font()
+    cfg = load_config(config_path)
+    cfg = _apply_path_overrides(
+        cfg,
+        config_path,
+        data_dir=data_dir,
+        main_data=main_data,
+        cne_alerts=cne_alerts,
+        trce_alerts=trce_alerts,
+        fusion_alerts=fusion_alerts,
+        output_dir=output_dir,
+    )
+    run_time = _now_value(now)
+    cfg["_now"] = run_time.strftime("%Y-%m-%d %H:%M:%S")
+
+    if verbose:
+        print("[1/6] 加载数据 ...")
+    data = load_data(cfg)
+
+    if verbose:
+        print("[2/6] 分析疫情事件 ...")
+    analysis = analyze_flu_events(data, cfg)
+
+    out_dir = cfg["output"]["dir"]
+    chart_dir = os.path.join(out_dir, "charts")
+    if verbose:
+        print("[3/6] 生成图表 ...")
+    chart_paths = generate_charts(data, chart_dir)
+
+    if verbose:
+        mode = "dry-run 规则底稿" if dry_run else "调用 Ollama"
+        print(f"[4/6] 生成叙述文本（{mode}） ...")
+    narratives = _call_narratives(analysis, cfg, dry_run=dry_run, verbose=verbose)
+
+    if verbose:
+        print("[5/6] 组装 Markdown ...")
+    markdown = build_report(analysis, narratives, chart_paths, cfg, out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    md_path = _abs_path(
+        markdown_path or f"report_{run_time.strftime('%Y%m%d_%H%M')}.md",
+        out_dir,
+    )
+    os.makedirs(os.path.dirname(md_path), exist_ok=True)
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(markdown)
+
+    actual_pdf_path = None
+    pdf_error = None
+    if md2pdf:
+        if verbose:
+            print("[6/6] 生成 PDF ...")
+        try:
+            from core.md_to_pdf import export_md_pdf
+
+            requested_pdf_path = _abs_path(pdf_path, out_dir) if pdf_path else None
+            if requested_pdf_path:
+                os.makedirs(os.path.dirname(requested_pdf_path), exist_ok=True)
+            if verbose:
+                actual_pdf_path = export_md_pdf(md_path, requested_pdf_path)
+            else:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    actual_pdf_path = export_md_pdf(md_path, requested_pdf_path)
+        except Exception as exc:
+            pdf_error = str(exc)
+            if verbose:
+                print(f"  PDF 生成失败：{pdf_error}")
+
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "md2pdf": md2pdf,
+        "generated_at": cfg["_now"],
+        "config_path": os.path.abspath(config_path),
+        "input_paths": _input_paths(cfg),
+        "output_dir": out_dir,
+        "markdown_path": md_path,
+        "pdf_path": actual_pdf_path,
+        "pdf_error": pdf_error,
+        "chart_paths": chart_paths,
+        "data_period": analysis["data_period"],
+        "event_count": len(analysis["events"]),
+        "latest": _latest_summary(analysis),
+    }
+
+
 # ----------------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------------
@@ -844,44 +1049,43 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=DEFAULT_CONFIG)
     ap.add_argument("--dry-run", action="store_true", help="不调用 LLM，用占位文本")
+    ap.add_argument("--data-dir", help="覆盖数据目录")
+    ap.add_argument("--main-data", help="覆盖主数据 Excel 文件名或路径")
+    ap.add_argument("--cne-alerts", help="覆盖 CNE 预警 CSV 文件名或路径")
+    ap.add_argument("--trce-alerts", help="覆盖 TRCE 预警 CSV 文件名或路径")
+    ap.add_argument("--fusion-alerts", help="覆盖 Fusion 预警 CSV 文件名或路径")
+    ap.add_argument("--output-dir", help="覆盖输出目录")
+    ap.add_argument("--markdown-path", help="覆盖 Markdown 输出路径")
+    ap.add_argument("--pdf-path", help="覆盖 PDF 输出路径")
+    pdf_group = ap.add_mutually_exclusive_group()
+    pdf_group.add_argument("--md2pdf", dest="md2pdf", action="store_true", default=True, help="生成 PDF")
+    pdf_group.add_argument("--no-md2pdf", "--no-pdf", dest="md2pdf", action="store_false", help="只生成 Markdown，不生成 PDF")
+    ap.add_argument("--json", action="store_true", help="以 JSON 输出结构化结果")
+    ap.add_argument("--quiet", action="store_true", help="不打印过程日志")
     args = ap.parse_args()
 
-    setup_font()
-    cfg = load_config(args.config)
-    now = datetime.now()
-    cfg["_now"] = now.strftime("%Y-%m-%d %H:%M:%S")
-
-    print("[1/5] 加载数据 ...")
-    data = load_data(cfg)
-    print(f"      主数据 {len(data['df'])} 行，CNE/TRCE/Fusion 预警 "
-          f"{len(data['cne'])}/{len(data['trce'])}/{len(data['fusion'])} 条")
-
-    print("[2/5] 分析疫情事件 ...")
-    analysis = analyze_flu_events(data, cfg)
-    print(f"      识别疫情事件 {len(analysis['events'])} 次；"
-          f"最近预警 {analysis['latest']['date']}（{analysis['latest']['risk_color']}）")
-
-    print("[3/5] 生成图表 ...")
-    out_dir = cfg["output"]["dir"]
-    chart_paths = generate_charts(data, os.path.join(out_dir, "charts"))
-
-    print("[4/5] 生成叙述文本" + ("（dry-run 规则底稿）" if args.dry_run else "（调用 Ollama）") + " ...")
-    narr = gen_narratives(analysis, cfg, dry_run=args.dry_run)
-
-    print("[5/6] 组装报告 ...")
-    md = build_report(analysis, narr, chart_paths, cfg, out_dir)
-    out_path = os.path.join(out_dir, f"report_{now.strftime('%Y%m%d_%H%M')}.md")
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(md)
-    print(f"  Markdown → {out_path}")
-
-    print("[6/6] 生成 PDF ...")
-    try:
-        from core.md_to_pdf import export_md_pdf
-        pdf_path = export_md_pdf(out_path)
-        print(f"  PDF → {pdf_path}")
-    except ImportError:
-        print("  跳过（需安装 reportlab: pip install reportlab）")
+    result = generate_report(
+        config_path=args.config,
+        dry_run=args.dry_run,
+        md2pdf=args.md2pdf,
+        data_dir=args.data_dir,
+        main_data=args.main_data,
+        cne_alerts=args.cne_alerts,
+        trce_alerts=args.trce_alerts,
+        fusion_alerts=args.fusion_alerts,
+        output_dir=args.output_dir,
+        markdown_path=args.markdown_path,
+        pdf_path=args.pdf_path,
+        verbose=not args.quiet and not args.json,
+    )
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"Markdown → {result['markdown_path']}")
+        if result["pdf_path"]:
+            print(f"PDF → {result['pdf_path']}")
+        elif result["pdf_error"]:
+            print(f"PDF 生成失败：{result['pdf_error']}")
 
 
 if __name__ == "__main__":

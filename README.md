@@ -40,7 +40,15 @@ python3 service.py
 ```python
 from service import generate_report
 
-result = generate_report(dry_run=False, make_pdf=True, verbose=True)
+result = generate_report(
+    dry_run=False,
+    enable_md2pdf=True,
+    input_dir="data",
+    output_dir="output",
+    markdown_path="report.md",
+    pdf_path="report.pdf",
+    verbose=True,
+)
 print(result["markdown_path"])
 print(result["pdf_path"])
 ```
@@ -48,8 +56,9 @@ print(result["pdf_path"])
 也可以用命令行获取 JSON 结果：
 
 ```bash
-python3 service.py --dry-run --json
-python3 service.py --json
+python3 service.py --dry-run --json --no-md2pdf
+python3 service.py --json --input-dir data --output-dir output --md2pdf
+python3 service.py --json --markdown-path output/report.md --pdf-path output/report.pdf
 ```
 
 ### 配置远程 Ollama
