@@ -485,6 +485,27 @@ TRCE：侧重识别病例时间序列传播动力学的非平稳变化，适合�
 Fusion：整合多模型/多源信号并输出分级预警，适合判断多源证据是否形成一致风险指向。"""
 
 
+SECTION_BADCASE_RULES = {
+    "risk": [
+        (r"当前.{0,12}(处于|仍处于).{0,12}(峰值前|高峰前|窗口期)", "将历史预警事件误写为当前峰值前状态"),
+        (r"(仍有|尚有|还有).{0,10}(47|48|约47|约48).{0,10}(天|窗口)", "将事件提前量误写为当前剩余时间"),
+    ],
+    "signal": [
+        (r"CNE(?![^。；，,]*未触发).{0,30}(已触发|发出预警|输出预警|检测到异常变化)", "将 CNE 未触发误写为已触发"),
+        (r"外部关注度.{0,12}(明确|显著).{0,12}(异常|变化|升高)", "在 CNE 未触发时过度确认外部关注度异常"),
+    ],
+    "confidence": [
+        (r"(三模型|CNE、TRCE、Fusion).{0,20}(一致|同步|共同触发)", "将两模型触发误写为三模型一致触发"),
+        (r"(完全一致|无.{0,8}分歧|不存在.{0,8}分歧)", "忽略 CNE 未触发造成的模型分歧"),
+    ],
+    "advice": [
+        (r"立即启动", "将事件复盘建议误写为实时响应命令"),
+        (r"(仍有|尚有|还有|利用).{0,10}(提前量|47|48).{0,12}窗口", "将事件提前量误写为当前可处置窗口"),
+        (r"峰值前.{0,12}(准备|处置|响应|降低传播)", "将已识别峰值误写为未来峰值前处置"),
+    ],
+}
+
+
 def _clean_llm_text(text):
     text = text or ""
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE)
@@ -506,7 +527,7 @@ def _clean_llm_text(text):
     return text.replace(" 。", "。").replace(" ，", "，")
 
 
-def _bad_llm_reason(text, facts=None):
+def _bad_llm_reason(text, facts=None, section_key=None):
     text = _clean_llm_text(text)
     if not text:
         return "清洗后为空"
@@ -533,6 +554,11 @@ def _bad_llm_reason(text, facts=None):
         response_window = r"(立即启动|仍有.{0,8}窗口|利用.{0,8}提前量窗口|峰值前.{0,12}(准备|处置|响应|降低传播))"
         if re.search(response_window, text):
             return "将事件提前量误写为当前可处置窗口"
+    if facts and "CNE首次预警：未触发" in facts:
+        rules = SECTION_BADCASE_RULES.get(section_key, [])
+        for pattern, reason in rules:
+            if re.search(pattern, text):
+                return reason
     return None
 
 
@@ -733,16 +759,16 @@ def _debug_meta(meta, label, cfg):
         print(f"        {label}thinking预览：{meta['thinking_preview']}")
 
 
-def _generate_section_turn(messages, section_name, facts, guidance, fallback, limit, cfg):
+def _generate_section_turn(messages, section_key, section_name, facts, guidance, fallback, limit, cfg):
     user_message = {"role": "user", "content": _section_task_prompt(section_name, guidance, limit)}
     turn_messages = messages + [user_message]
     raw = call_ollama_chat(turn_messages, cfg)
     first_meta = dict(OLLAMA_LAST_META)
-    reason = _bad_llm_reason(raw, facts)
+    reason = _bad_llm_reason(raw, facts, section_key)
     if reason:
         retry = call_ollama_chat(turn_messages, cfg, think=False)
         retry_meta = dict(OLLAMA_LAST_META)
-        retry_reason = _bad_llm_reason(retry, facts)
+        retry_reason = _bad_llm_reason(retry, facts, section_key)
         if retry_reason:
             simple_messages = messages + [{
                 "role": "user",
@@ -750,7 +776,7 @@ def _generate_section_turn(messages, section_name, facts, guidance, fallback, li
             }]
             simple_retry = call_ollama_chat(simple_messages, cfg, think=False)
             simple_meta = dict(OLLAMA_LAST_META)
-            simple_reason = _bad_llm_reason(simple_retry, facts)
+            simple_reason = _bad_llm_reason(simple_retry, facts, section_key)
             if simple_reason:
                 print(f"      - {section_name}：LLM 输出不可用，使用规则兜底（{simple_reason}；{_meta_text(simple_meta)}）")
                 _debug_meta(first_meta, "首次", cfg)
@@ -816,7 +842,7 @@ def gen_narratives(analysis, cfg, dry_run=False):
     ]
     for key, section_name, section_facts, guidance, fallback, limit in sections:
         narratives[key], messages = _generate_section_turn(
-            messages, section_name, section_facts, guidance, fallback, limit, cfg
+            messages, key, section_name, section_facts, guidance, fallback, limit, cfg
         )
     return narratives
 
