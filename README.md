@@ -21,9 +21,12 @@ Flu/
 │   ├── generate_report.py   # 报告生成核心逻辑
 │   └── md_to_pdf.py         # Markdown 转 PDF
 └── output/
-    ├── report_YYYYMMDD_HHMM.md / .pdf
+    ├── 流感预警综合分析报告_YYYYMMDD_HHMM.md / .pdf
     └── charts/{cne,trce,fusion}_chart.png
 ```
+
+> **报告命名**:统一 `流感预警综合分析报告_<时间戳>.md/.pdf`(前缀见 `core/generate_report.py` 的 `REPORT_FILE_STEM`)。
+> **额外输出目录(可选)**:在 `config.yaml` 的 `output.extra_pdf_dir` 填绝对路径后,出 PDF 时会把报告 PDF **平铺复制一份**到该目录(只放 PDF),便于归档 / 外部系统直取。留空=不额外输出。Windows 中文/空格路径用单引号,不要用双引号。
 
 ## 使用
 

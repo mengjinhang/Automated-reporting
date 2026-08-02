@@ -14,9 +14,13 @@ import io
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from datetime import datetime
+
+# 报告输出文件名统一前缀:产物形如 <STEM>_<时间戳>.md/.pdf,如 流感预警综合分析报告_20260802_1130.pdf
+REPORT_FILE_STEM = "流感预警综合分析报告"
 
 import numpy as np
 import pandas as pd
@@ -1140,7 +1144,7 @@ def generate_report(
     markdown = build_report(analysis, narratives, chart_paths, cfg, out_dir)
     os.makedirs(out_dir, exist_ok=True)
     md_path = _abs_path(
-        markdown_path or f"report_{run_time.strftime('%Y%m%d_%H%M')}.md",
+        markdown_path or f"{REPORT_FILE_STEM}_{run_time.strftime('%Y%m%d_%H%M')}.md",
         out_dir,
     )
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
@@ -1168,6 +1172,22 @@ def generate_report(
             if verbose:
                 print(f"  PDF 生成失败：{pdf_error}")
 
+    # 额外输出:把报告 PDF 平铺复制一份到 config.output.extra_pdf_dir(若已配置)。
+    extra_pdf_path = None
+    extra_pdf_dir = (cfg.get("output", {}).get("extra_pdf_dir") or "").strip()
+    if actual_pdf_path and extra_pdf_dir:
+        try:
+            os.makedirs(extra_pdf_dir, exist_ok=True)
+            dst = os.path.join(extra_pdf_dir, os.path.basename(actual_pdf_path))
+            if os.path.abspath(dst) != os.path.abspath(actual_pdf_path):
+                shutil.copy2(actual_pdf_path, dst)
+                extra_pdf_path = dst
+                if verbose:
+                    print(f"  PDF 已额外复制到：{dst}")
+        except Exception as exc:
+            if verbose:
+                print(f"  额外 PDF 复制失败：{exc}")
+
     return {
         "ok": True,
         "dry_run": dry_run,
@@ -1178,6 +1198,7 @@ def generate_report(
         "output_dir": out_dir,
         "markdown_path": md_path,
         "pdf_path": actual_pdf_path,
+        "extra_pdf_path": extra_pdf_path,
         "pdf_error": pdf_error,
         "chart_paths": chart_paths,
         "data_period": analysis["data_period"],
@@ -1230,6 +1251,8 @@ def main():
             print(f"PDF → {result['pdf_path']}")
         elif result["pdf_error"]:
             print(f"PDF 生成失败：{result['pdf_error']}")
+        if result.get("extra_pdf_path"):
+            print(f"额外 PDF → {result['extra_pdf_path']}")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,10 @@ data:
 
 output:
   dir: "output"             # 相对脚本所在目录
+  # 额外输出目录(可选):出 PDF 后把报告 PDF 平铺复制一份到此处,便于归档 / 外部系统直接取。
+  # 留空(或删除本行)=不额外输出。建议填绝对路径;Windows 中文/空格路径用单引号,别用双引号
+  # (YAML 双引号会转义反斜杠)。
+  extra_pdf_dir: 'E:\UserData\PC\Desktop\Disease Surveillance and Reporting\报告\流感预警'
 
 analysis:
   # latest_confirmed_event: 按最近一个已有病例峰值验证的完整风险事件出报告（更接近样例）

@@ -98,6 +98,8 @@ def main():
         print(f"PDF → {result['pdf_path']}")
     elif result["pdf_error"]:
         print(f"PDF 生成失败：{result['pdf_error']}")
+    if result.get("extra_pdf_path"):
+        print(f"额外 PDF → {result['extra_pdf_path']}")
 
 
 if __name__ == "__main__":
